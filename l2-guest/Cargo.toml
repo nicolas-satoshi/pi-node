@@ -1,0 +1,54 @@
+[package]
+name = "l2-guest"
+version = "0.2.0"
+edition = "2021"
+
+# QUAN TRỌNG: crate này KHÔNG nằm trong workspace của pi-node.
+# Nó build bằng toolchain riêng của zkVM (succinct / risc0), target riêng.
+# Vì vậy nó nằm trong `exclude` của Cargo.toml gốc.
+
+[lib]
+name = "l2_guest"
+path = "src/lib.rs"
+
+# Bin chỉ là lớp I/O mỏng cho zkVM. Toàn bộ logic nằm ở lib để test được bằng
+# `cargo test --features std --lib` (bin có compile_error! khi thiếu sp1/risc0
+# nên không test trực tiếp được).
+[[bin]]
+name = "l2-guest"
+path = "src/main.rs"
+
+[dependencies]
+parity-scale-codec = { version = "3.6", default-features = false, features = ["derive"] }
+sha2 = { version = "0.10", default-features = false }
+
+# THÊM cho STF thật (Merkle tree + chữ ký) — xem l2-guest/src/smt.rs và
+# l2-guest/src/transaction.rs. ed25519-dalek chọn thay vì schnorrkel/sr25519
+# vì có no_std chính thức + khả năng cao được patch tăng tốc trong cả
+# SP1/Risc0 (xem docstring transaction.rs để biết cách đổi sang sr25519 nếu
+# cần dùng chung account với L1).
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
+
+# Ghim version theo bản zkVM bạn cài. Kiểm tra bằng:
+#   cargo prove --version      (SP1)
+#   cargo risczero --version   (Risc0)
+sp1-zkvm = { version = "4.0", optional = true }
+risc0-zkvm = { version = "1.2", default-features = false, features = ["std"], optional = true }
+
+[dev-dependencies]
+# Test dùng khoá xác định (SigningKey::from_bytes) nên không cần RNG.
+
+[features]
+default = []
+sp1 = ["dep:sp1-zkvm"]
+risc0 = ["dep:risc0-zkvm"]
+# Bật khi chạy test trên máy dev thường:
+#     cargo test --features std --lib
+# KHÔNG bật khi build cho zkVM thật (cargo prove build / cargo risczero build
+# tự quản feature riêng). Dùng `--lib` vì bin có compile_error! khi thiếu sp1/risc0.
+std = ["parity-scale-codec/std", "sha2/std", "ed25519-dalek/std"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

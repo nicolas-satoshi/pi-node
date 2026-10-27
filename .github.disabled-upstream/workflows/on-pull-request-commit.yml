@@ -1,0 +1,124 @@
+---
+name: PR commit
+
+on:
+  merge_group:
+  pull_request:
+    branches:
+      - main
+      - 'release-*'
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  check-pr-title:
+    name: Check PR title
+    runs-on: ubuntu-20.04
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check PR title
+        uses: Cardinal-Cryptography/github-actions/check-pr-title@v7
+        with:
+          pr-title: ${{ github.event.pull_request.title }}
+          regexp: '(A0|L1|CW|INFRA)-[0-9]+'
+
+  code-formatting:
+    name: Check code formatting
+    uses: ./.github/workflows/_check-code-formatting.yml
+
+  check-cliain-build:
+    name: Check cliain build
+    # this is not directly needed, but in order to better pack self-hosted runners we run those
+    # two small in time jobs one after another
+    needs: [code-formatting]
+    uses: ./.github/workflows/_build-and-push-cliain.yml
+    with:
+      check-only: true
+
+  check-excluded-packages:
+    name: Check excluded packages
+    uses: ./.github/workflows/_check-excluded-packages.yml
+
+  unit-tests-and-static-checks:
+    name: Unit tests and clippy
+    uses: ./.github/workflows/_unit-tests-and-static-checks.yml
+
+  check-production-node-and-runtime:
+    name: Check production node and runtime
+    uses: ./.github/workflows/_check-production-node-and-runtime.yml
+
+  check-runtime-metadata:
+    name: Check runtime metadata
+    needs:
+      - build-test-aleph-node
+      - build-chain-bootstrapper
+    uses: ./.github/workflows/_check-runtime-metadata.yml
+    with:
+      ref: ${{ github.ref }}
+      artifact-aleph-node-image: ${{ needs.build-test-aleph-node.outputs.artifact-name-image }}
+      # yamllint disable-line rule:line-length
+      artifact-chain-bootstrapper-image: ${{ needs.build-chain-bootstrapper.outputs.artifact-name-image }}
+
+  build-test-aleph-node:
+    name: Build test aleph-node
+    uses: ./.github/workflows/_build-aleph-node.yml
+    with:
+      ref: ${{ github.ref }}
+      production: false
+
+  build-chain-bootstrapper:
+    name: Build chain-bootstrapper
+    uses: ./.github/workflows/_build-chain-bootstrapper.yml
+    with:
+      ref: ${{ github.ref }}
+      production: false
+
+  build-aleph-e2e-client-image:
+    name: Build aleph-e2e-client image
+    uses: ./.github/workflows/_build-aleph-e2e-client.yml
+    with:
+      ref: ${{ github.ref }}
+
+  run-e2e-finalization-test:
+    name: Run e2e finalization test
+    needs:
+      - build-test-aleph-node
+      - build-aleph-e2e-client-image
+      - build-chain-bootstrapper
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Run e2e test
+        uses: ./.github/actions/run-e2e-test
+        with:
+          test-case: finalization::finalization
+          # yamllint disable-line rule:line-length
+          artifact-aleph-e2e-client-image: ${{ needs.build-aleph-e2e-client-image.outputs.artifact-name-image }}
+          artifact-aleph-node-image: ${{ needs.build-test-aleph-node.outputs.artifact-name-image }}
+          # yamllint disable-line rule:line-length
+          artifact-chain-bootstrapper-image: ${{ needs.build-chain-bootstrapper.outputs.artifact-name-image }}
+
+  run-e2e-token-transfer-test:
+    name: Run e2e token transfer test
+    needs:
+      - build-test-aleph-node
+      - build-aleph-e2e-client-image
+      - build-chain-bootstrapper
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Run e2e test
+        uses: ./.github/actions/run-e2e-test
+        with:
+          test-case: token_transfer
+          # yamllint disable-line rule:line-length
+          artifact-aleph-e2e-client-image: ${{ needs.build-aleph-e2e-client-image.outputs.artifact-name-image }}
+          artifact-aleph-node-image: ${{ needs.build-test-aleph-node.outputs.artifact-name-image }}
+          # yamllint disable-line rule:line-length
+          artifact-chain-bootstrapper-image: ${{ needs.build-chain-bootstrapper.outputs.artifact-name-image }}

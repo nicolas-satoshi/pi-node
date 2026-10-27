@@ -1,0 +1,69 @@
+---
+#  This workflow builds arbitrary docker image based on binary downloaded in GH artifacts
+name: Build and push docker image to ECR
+on:
+  workflow_call:
+    inputs:
+      binary-artifact-name:
+        description: 'Name of a binary stored in GH artifacts'
+        required: true
+        type: string
+      binary-name:
+        description: 'Name of a binary to build docker image on top of'
+        required: true
+        type: string
+      docker-image-name:
+        description: 'Name of docker image to be uploaded to ECR'
+        required: true
+        type: string
+      docker-file-path:
+        description: 'Path to Dockerfile'
+        required: true
+        type: string
+      docker-image-name-latest:
+        description: 'Name of latest docker image to be uploaded to ECR'
+        required: false
+        type: string
+
+jobs:
+  main:
+    name: Push ${{ inputs.binary-name }} docker image to the ECR
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout aleph-node sources
+        uses: actions/checkout@v4
+
+      - name: Call action get-ref-properties
+        id: get-ref-properties
+        uses: Cardinal-Cryptography/github-actions/get-ref-properties@v7
+
+      - name: Download ${{ inputs.binary-artifact-name }} from artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.binary-artifact-name }}
+          path: target/release/
+
+      - name: Build ${{ inputs.binary-name }} docker image
+        id: build-image
+        run: |
+          chmod +x target/release/${{ inputs.binary-name }}
+          docker build \
+            --tag ${{ inputs.docker-image-name }} \
+            -f ${{ inputs.docker-file-path }} .
+
+      - name: Login to Public Amazon ECR
+        id: login-public-ecr
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.ECR_PUBLIC_HOST }}
+          username: ${{ secrets.AWS_MAINNET_ACCESS_KEY_ID }}
+          password: ${{ secrets.AWS_MAINNET_SECRET_ACCESS_KEY }}
+
+      - name: Push image to ECR
+        run: |
+          docker push '${{ inputs.docker-image-name }}'
+          if [[ '${{ steps.get-ref-properties.outputs.branch }}' -eq 'main' && \
+                 '${{ inputs.docker-image-name-latest }}' != '' ]]; then
+            docker tag '${{ inputs.docker-image-name }}' '${{ inputs.docker-image-name-latest }}'
+            docker push '${{ inputs.docker-image-name-latest }}'
+          fi

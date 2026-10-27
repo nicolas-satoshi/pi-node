@@ -1,0 +1,53 @@
+[package]
+name = "pallet-zk-rollup-verifier"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+parity-scale-codec = { workspace = true, features = ["derive"] }
+scale-info = { workspace = true, features = ["derive"] }
+log = { workspace = true }
+
+frame-support = { workspace = true }
+frame-system = { workspace = true }
+frame-benchmarking = { workspace = true, optional = true }
+
+sp-runtime = { workspace = true }
+sp-io = { workspace = true }
+sp-std = { workspace = true }
+
+[dev-dependencies]
+sp-core = { workspace = true }
+
+[features]
+default = ["std"]
+std = [
+    "parity-scale-codec/std",
+    "scale-info/std",
+    "log/std",
+    "frame-support/std",
+    "frame-system/std",
+    "frame-benchmarking?/std",
+    "sp-io/std",
+    "sp-runtime/std",
+    "sp-std/std",
+]
+
+runtime-benchmarks = [
+    "dep:frame-benchmarking",
+    "frame-support/runtime-benchmarks",
+    "frame-system/runtime-benchmarks",
+]
+
+# ⚠️ CHỈ DEVNET: bật DevInsecureVerifier (chấp nhận mọi proof khác rỗng).
+dev-insecure-verifier = []
+# Xác nhận rằng bạn hiểu rủi ro. Bắt buộc bật kèm `dev-insecure-verifier`,
+# nếu không sẽ compile_error — để feature không bị bật gián tiếp mà không ai biết.
+i-understand-this-is-insecure = []
+
+try-runtime = [
+    "frame-support/try-runtime",
+]

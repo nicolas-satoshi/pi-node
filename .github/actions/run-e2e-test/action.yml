@@ -1,0 +1,161 @@
+---
+name: 'Run e2e test'
+description: 'Run single e2e test.'
+
+inputs:
+  test-case:
+    description: 'Name of test to run.'
+    required: true
+  artifact-aleph-e2e-client-image:
+    description: 'aleph-e2e-client image name in GH artifacts'
+    required: true
+  artifact-aleph-node-image:
+    description: 'Name of aleph-node image stored in GH Artifacts'
+    required: true
+  artifact-chain-bootstrapper-image:
+    description: 'chain-bootstrapper image name in GH artifacts'
+    required: true
+  node-count:
+    description: 'Number of nodes to run.'
+    required: false
+    default: '5'
+  reserved-seats:
+    description: 'Number of reserved seats available to validators.'
+    required: false
+  non-reserved-seats:
+    description: 'Number of non-reserved seats available to validators.'
+    required: false
+  check-finalization-after-test:
+    description: 'Whether to check finalization after e2e case run.'
+    required: false
+    default: 'true'
+  deploy-adder:
+    description: 'Whether to deploy the adder sample contract to the node.'
+    required: false
+    default: 'false'
+  aleph-node-image-tag:
+    description: 'Name of aleph-node docker image tag'
+    required: false
+    default: aleph-node:latest
+  compose-file:
+    description: 'Custom docker-compose configuration'
+    required: false
+    default: ''
+  timeout-minutes:
+    description: 'The maximum number of minutes to let a test run before it is canceled and
+      considered failed'
+    required: false
+    default: 15
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout aleph-node sources
+      uses: actions/checkout@v4
+
+    - name: Call action get-ref-properties
+      id: get-ref-properties
+      uses: Cardinal-Cryptography/github-actions/get-ref-properties@v7
+
+    - name: Download node docker image
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact-aleph-node-image }}
+
+    - name: Load node docker image
+      shell: bash
+      run: docker load -i aleph-node.tar
+
+    - name: Download chain-bootstrapper image
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact-chain-bootstrapper-image }}
+
+    - name: Load chain-bootstrapper image
+      shell: bash
+      run: docker load -i chain-bootstrapper.tar
+
+    - name: Run consensus party
+      shell: bash
+      run: |
+        NODE_IMAGE='${{ inputs.aleph-node-image-tag }}' \
+        DOCKER_COMPOSE='${{ inputs.compose-file }}' \
+          ./.github/scripts/run_consensus.sh -n '${{ inputs.node-count }}'
+
+    - name: Download aleph-e2e-client image
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact-aleph-e2e-client-image }}
+
+    - name: Load test suite docker image
+      shell: bash
+      run: docker load -i aleph-e2e-client.tar
+
+    - name: Wait for the finalization before e2e test
+      shell: bash
+      run: |
+        export TIMEOUT_MINUTES="5m"
+        ./.github/scripts/run_e2e_test.sh -t finalization::finalization \
+          -a aleph-e2e-client:latest
+
+    - name: Run single e2e test
+      id: run-single-e2e-test
+      shell: bash
+      run: |
+        ARGS=(
+          -t '${{ inputs.test-case }}'
+          -a aleph-e2e-client:latest
+        )
+
+        RESERVED_SEATS='${{ inputs.reserved-seats }}'
+        NON_RESERVED_SEATS='${{ inputs.non-reserved-seats }}'
+
+        if [[ -n "${RESERVED_SEATS}" && -n "${NON_RESERVED_SEATS}" ]]; then
+          ARGS+=(
+            -f "${RESERVED_SEATS}"
+            -n "${NON_RESERVED_SEATS}"
+          )
+        fi
+
+        DEPLOY_ADDER='${{ inputs.deploy-adder }}'
+
+        if [[ "${DEPLOY_ADDER}" = "true" ]]; then
+          pushd contracts/adder
+          export ADDER=$(./deploy.sh)
+          popd
+        fi
+
+        export TIMEOUT_MINUTES="${{ inputs.timeout-minutes }}m"
+        ./.github/scripts/run_e2e_test.sh "${ARGS[@]}"
+
+    - name: Get log tarball file name
+      if: ${{ failure() }}
+      id: get-log-tarball-file-name
+      shell: bash
+      run: |
+        test_case_escaped=$(echo ${{ inputs.test-case }} | sed 's/::/-/g')
+        echo "name=${test_case_escaped}" >> $GITHUB_OUTPUT
+
+    - name: Archive logs from failed e2e test
+      if: ${{ failure() }}
+      shell: bash
+      run: |
+        ./.github/scripts/run_consensus.sh -n '${{ inputs.node-count }}' \
+          --archive-logs \
+          "aleph-node-${{ steps.get-log-tarball-file-name.outputs.name }}-e2e-failure.tgz"
+
+    - name: Upload logs from failed e2e test
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v4
+      with:
+        path: aleph-node-${{ steps.get-log-tarball-file-name.outputs.name }}-e2e-failure.tgz
+        name: aleph-node-${{ steps.get-log-tarball-file-name.outputs.name }}-e2e-failure.tgz
+        if-no-files-found: error
+        retention-days: 7
+
+    - name: Check finalization after e2e test
+      if: inputs.check-finalization-after-test == 'true'
+      shell: bash
+      run: |
+        export TIMEOUT_MINUTES="5m"
+        ./.github/scripts/run_e2e_test.sh -t finalization::finalization \
+          -a aleph-e2e-client:latest

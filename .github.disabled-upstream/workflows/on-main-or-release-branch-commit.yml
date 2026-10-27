@@ -1,0 +1,156 @@
+---
+name: Main or release branch commit
+
+on:
+  push:
+    branches:
+      - main
+      - 'release-*'
+
+jobs:
+  check-vars-and-secrets:
+    name: Check vars and secrets
+    uses: ./.github/workflows/_check-vars-and-secrets.yml
+    secrets: inherit
+
+  get-full-docker-image-path:
+    name: Get aleph-node and chain-bootstrapper fqdn paths
+    needs: [check-vars-and-secrets]
+    runs-on: ubuntu-20.04
+    outputs:
+      fqdn-image: ${{ steps.get-fqdns.outputs.fqdn-image }}
+      fqdn-image-latest: ${{ steps.get-fqdns.outputs.fqdn-image-latest }}
+      ref: ${{ steps.get-fqdns.outputs.ref }}
+      image-exists: ${{ steps.get-fqdns.outputs.image-exists }}
+      # yamllint disable-line rule:line-length
+      chain-bootstrapper-image-exists: ${{ steps.get-fqdns.outputs.chain-bootstrapper-image-exists }}
+      chain-bootstrapper-fqdn-image: ${{ steps.get-fqdns.outputs.chain-bootstrapper-fqdn-image }}
+      # yamllint disable-line rule:line-length
+      chain-bootstrapper-fqdn-image-latest: ${{ steps.get-fqdns.outputs.chain-bootstrapper-fqdn-image-latest }}
+
+    steps:
+      - name: Get FQDNs
+        id: get-fqdns
+        uses: Cardinal-Cryptography/github-actions/get-aleph-node-fqdn-image@v7
+        with:
+          ref: ${{ github.ref }}
+          ecr-dev-node-repo: ${{ vars.ECR_DEV_ALEPH_NODE_REPO }}
+          ecr-prod-node-repo: ${{ vars.ECR_ALEPH_NODE_REPO }}
+          ecr-chain-bootstrapper-repo: ${{ vars.ECR_CHAIN_BOOTSTRAPPER_REPO }}
+          test-binary: 'false'
+
+  build-chain-bootstrapper:
+    needs: [check-vars-and-secrets]
+    name: Build chain-bootstrapper
+    uses: ./.github/workflows/_build-chain-bootstrapper.yml
+    with:
+      ref: ${{ github.ref }}
+      production: true
+
+  push-chain-bootstrapper-image-to-ecr:
+    needs:
+      - build-chain-bootstrapper
+      - get-full-docker-image-path
+    name: Push chain-bootstrapper docker image to ECR
+    uses: ./.github/workflows/_push-image-to-ecr.yml
+    secrets: inherit
+    with:
+      binary-artifact-name: ${{ needs.build-chain-bootstrapper.outputs.artifact-name-binary }}
+      # yamllint disable-line rule:line-length
+      docker-image-name: ${{ needs.get-full-docker-image-path.outputs.chain-bootstrapper-fqdn-image }}
+      # yamllint disable-line rule:line-length
+      docker-image-name-latest: ${{ needs.get-full-docker-image-path.outputs.chain-bootstrapper-fqdn-image-latest }}
+      binary-name: chain-bootstrapper
+      docker-file-path: ./bin/chain-bootstrapper/Dockerfile
+
+  build-and-push-cliain:
+    needs: [check-vars-and-secrets]
+    name: Build and push cliain
+    uses: ./.github/workflows/_build-and-push-cliain.yml
+    secrets: inherit
+    with:
+      check-only: false
+
+  build-production-aleph-node:
+    needs: [check-vars-and-secrets]
+    name: Build production aleph-node
+    uses: ./.github/workflows/_build-aleph-node.yml
+    with:
+      ref: ${{ github.ref }}
+      production: true
+
+  build-production-runtime:
+    needs: [check-vars-and-secrets]
+    name: Build production runtime
+    uses: ./.github/workflows/_build-production-runtime.yml
+    with:
+      ref: ${{ github.ref }}
+
+  check-runtime-determinism:
+    needs: [build-production-runtime]
+    uses: ./.github/workflows/_check-runtime-determimism.yml
+
+  store-production-node-and-runtime-in-mainnet-s3:
+    name: Store production node and runtime in Mainnet bucket
+    runs-on: ubuntu-20.04
+    needs:
+      - build-production-aleph-node
+      - build-production-runtime
+    steps:
+      - name: Checkout aleph-node source code
+        uses: actions/checkout@v4
+
+      - name: Store production node and runtime
+        uses: ./.github/actions/store-node-and-runtime
+        with:
+          profile: production
+          # yamllint disable-line rule:line-length
+          aleph-node-artifact-name: ${{ needs.build-production-aleph-node.outputs.artifact-name-binary }}
+          # yamllint disable-line rule:line-length
+          aleph-runtime-artifact-name: ${{ needs.build-production-runtime.outputs.aleph-runtime-artifact-name }}
+          aws-access-key-id: ${{ secrets.AWS_MAINNET_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_MAINNET_SECRET_ACCESS_KEY }}
+          aws-bucket: ${{ secrets.CI_MAINNET_S3BUCKET_NAME }}
+
+  push-production-node-image-to-ecr:
+    name: Push production node docker image to ECR
+    needs:
+      - build-production-aleph-node
+      - get-full-docker-image-path
+    uses: ./.github/workflows/_push-image-to-ecr.yml
+    secrets: inherit
+    with:
+      binary-artifact-name: ${{ needs.build-production-aleph-node.outputs.artifact-name-binary }}
+      docker-image-name: ${{ needs.get-full-docker-image-path.outputs.fqdn-image }}
+      docker-image-name-latest: ${{ needs.get-full-docker-image-path.outputs.fqdn-image-latest }}
+      binary-name: aleph-node
+      docker-file-path: ./docker/Dockerfile
+
+  send-slack-notification-release:
+    name: Send Slack notification about workflow status
+    runs-on: ubuntu-20.04
+    if: always() && startsWith(github.ref_name, 'release-')
+    needs: [push-production-node-image-to-ecr]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Send Slack message
+        uses: Cardinal-Cryptography/github-actions/slack-notification@v7
+        with:
+          notify-on: "always"
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_DEV_ONDUTY }}
+
+  send-slack-notification-main:
+    name: Send Slack notification about workflow status
+    runs-on: ubuntu-20.04
+    if: always() && github.ref_name == 'main'
+    needs: [push-production-node-image-to-ecr]
+    steps:
+      - name: Send Slack message
+        uses: Cardinal-Cryptography/github-actions/slack-notification@v7
+        with:
+          notify-on: "failure"
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_DEV_ONDUTY }}
