@@ -1,57 +1,66 @@
-# Chuyển quyền sudo sang multisig
+# Moving sudo to a multisig
 
-Hiện tại một khoá sudo duy nhất có thể: chỉnh tham số lạm phát (trong giới hạn
-cứng của spec 4), nâng cấp runtime, chi quỹ treasury, đổi sequencer L2. Mất hoặc
-lộ khoá đó là mất toàn bộ quyền kiểm soát chain. Multisig N-của-M giảm rủi ro
-này: cần nhiều khoá đồng ý, và mất một khoá không làm mất chain.
+Today a single sudo key can: adjust the inflation parameters (within the hard
+bounds of spec 4), upgrade the runtime, spend the treasury, and change the L2
+sequencer. Losing or leaking that key means losing all control of the chain.
+An N-of-M multisig reduces this risk: several keys must agree, and losing one
+key does not mean losing the chain.
 
-> Lưu ý kỹ thuật: `pallet_sudo` bỏ qua bộ lọc call, nên KHÔNG thể giới hạn sudo
-> bằng cấu hình runtime. Multisig là cách giảm rủi ro thực tế duy nhất ở tầng
-> quản trị hiện tại. Về lâu dài nên thay sudo bằng quản trị on-chain (xem
-> TOKENOMICS.md).
+> Technical note: `pallet_sudo` bypasses call filters, so sudo can NOT be
+> restricted through runtime configuration. A multisig is the only practical
+> way to reduce risk at the current governance layer. In the long run, sudo
+> should be replaced by on-chain governance (see TOKENOMICS.md).
 
-## Chọn ngưỡng
-- 2-của-3: tối thiểu. Mất 2 khoá là mất quyền vĩnh viễn.
-- 3-của-5: khuyến nghị khi đã có đủ người đáng tin. Chịu được mất 2 khoá.
-- Mỗi khoá nằm trên một thiết bị/người KHÁC NHAU. Ba khoá cùng một máy thì
-  không an toàn hơn một khoá.
+## Choosing a threshold
+- 2-of-3: the minimum. Losing 2 keys means permanently losing control.
+- 3-of-5: recommended once you have enough trusted people. It tolerates the
+  loss of 2 keys.
+- Each key must live on a DIFFERENT device and belong to a DIFFERENT person.
+  Three keys on the same machine are no safer than one key.
 
-## Các bước (không bước nào bỏ qua được)
+## Steps (none of them can be skipped)
 
-1. **Tạo khoá** cho từng người ký, mỗi người tự tạo trên máy của mình. Chỉ gửi
-   cho nhau ĐỊA CHỈ công khai, không bao giờ gửi seed.
-2. **Tính địa chỉ multisig** (chạy offline được, chỉ cần Python 3):
+1. **Generate keys** for each signatory. Everyone generates their own key on
+   their own machine. Only exchange the public ADDRESSES, never the seed.
+2. **Derive the multisig address** (works offline, only Python 3 is needed):
    ```
    python3 scripts/derive_multisig.py --threshold 2 ADDR1 ADDR2 ADDR3
    ```
-   Mặc định dùng prefix 5297 (địa chỉ bắt đầu bằng `pi`). Script tự chạy
-   self-test với vector chuẩn trước khi in kết quả. Mọi người ký tự chạy và
-   đối chiếu cùng một kết quả. Thứ tự địa chỉ không ảnh hưởng.
-3. **Đối chiếu trên giao diện**: trong Polkadot-JS Apps, Accounts → Add
-   multisig, nhập cùng danh sách và ngưỡng. Địa chỉ phải trùng với bước 2.
-4. **Nạp một ít PI** vào địa chỉ multisig (đủ trả existential deposit và phí).
-5. **Thử trước với call vô hại**: từ một người ký, gửi
+   It uses prefix 5297 by default (addresses start with `pi`). The script
+   runs a self-test against a known test vector before printing the result.
+   Every signatory should run it independently and compare results. The order
+   of the addresses does not matter.
+3. **Cross-check in the UI**: in Polkadot-JS Apps, go to Accounts → Add
+   multisig, and enter the same list of signatories and the same threshold.
+   The address must match the one from step 2.
+4. **Fund the multisig address** with a small amount of PI (enough for the
+   existential deposit and fees).
+5. **Test with a harmless call first**: from one signatory, submit
    `multisig.asMulti(threshold, otherSignatories, null, system.remark("test"), maxWeight)`,
-   các người còn lại duyệt. Chỉ khi thử xong và thấy `MultisigExecuted`
-   mới sang bước 6.
-6. **Chuyển sudo**: từ khoá sudo hiện tại gọi `sudo.setKey(địa_chỉ_multisig)`.
-   KHÔNG THỂ HOÀN TÁC nếu địa chỉ sai hoặc multisig không dùng được. Hãy đọc
-   lại địa chỉ từng ký tự một lần nữa.
-7. **Xác nhận**: `sudo.key()` phải trả về địa chỉ multisig. Thử một thao tác sudo
-   rủi ro thấp qua multisig.
-8. **Huỷ khoá sudo cũ** khi đã chắc chắn, và đừng giữ lại seed của nó.
+   and have the other signatories approve it. Only move on to step 6 once the
+   test is done and you have seen `MultisigExecuted`.
+6. **Transfer sudo**: from the current sudo key, call
+   `sudo.setKey(multisig_address)`. This CANNOT BE UNDONE if the address is
+   wrong or the multisig is unusable. Re-read the address character by
+   character one more time.
+7. **Verify**: `sudo.key()` must return the multisig address. Try a low-risk
+   sudo operation through the multisig.
+8. **Retire the old sudo key** once you are certain everything works, and do
+   not keep its seed.
 
-## Dùng sudo sau khi chuyển
-Khoá sudo bây giờ là địa chỉ multisig, nên mọi thao tác sudo đi qua:
+## Using sudo after the transfer
+The sudo key is now the multisig address, so every sudo operation goes through:
 `multisig.asMulti(threshold, others, timepoint, sudo.sudo(<call>), maxWeight)`.
-Người khởi tạo gửi call lần đầu (lưu `timepoint` từ sự kiện `NewMultisig`),
-những người còn lại gọi lại với timepoint đó; người cuối cùng làm call được
-thực thi. Có thể dùng `multisig.approveAsMulti` với hash của call để tiết kiệm
-phí cho các lần duyệt giữa chừng.
+The initiator submits the call first (save the `timepoint` from the
+`NewMultisig` event). The other signatories then call it again with that
+timepoint, and the last signatory's call is the one that executes. You can use
+`multisig.approveAsMulti` with the call hash to save fees on the intermediate
+approvals.
 
-## Rủi ro còn lại
-- Người ký bị thoả hiệp đủ ngưỡng vẫn kiểm soát được chain.
-- Mất đủ khoá để không đạt ngưỡng thì không ai nâng cấp hay sửa runtime được.
-  Lưu bản sao lưu seed ngoại tuyến cho từng khoá.
-- Phí và deposit của multisig tính theo `DepositBase`/`DepositFactor` trong
-  runtime; nạp dư một chút.
+## Remaining risks
+- If enough signatories to reach the threshold are compromised, they still
+  control the chain.
+- If enough keys are lost that the threshold can no longer be reached, nobody
+  can upgrade or fix the runtime. Keep an offline backup of each key's seed.
+- Multisig fees and deposits are computed from `DepositBase` / `DepositFactor`
+  in the runtime; fund the account with a little extra.
